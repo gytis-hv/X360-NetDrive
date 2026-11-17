@@ -61,6 +61,61 @@ public sealed class IsoImageTests
     }
 
     [Fact]
+    public async Task OpenAsync_ExposesTitleForXexTitleIdAndDiscMetadata()
+    {
+        var executable = XexTitleFixtures.CreateExecutable(
+            XexTitleFixtures.DefaultTitleId,
+            XexTitleFixtures.CreateXdbf((1, "XEX display title")),
+            mediaId: 0x11223344,
+            discNumber: 2,
+            discCount: 4);
+        var source = CreateImage(0, executableOverride: executable);
+
+        var image = await IsoImage.OpenAsync(source);
+
+        Assert.Equal("XEX display title", image.DisplayTitle);
+        Assert.Null(image.TitleWarning);
+        Assert.Equal(XexTitleFixtures.DefaultTitleId, image.TitleId);
+        Assert.Equal(0x11223344u, image.MediaId);
+        Assert.Equal((byte)2, image.DiscNumber);
+        Assert.Equal((byte)4, image.DiscCount);
+    }
+
+    [Fact]
+    public async Task OpenAsync_TitleMetadataFailureIsWarningNotImageFailure()
+    {
+        var source = CreateImage(0);
+
+        var image = await IsoImage.OpenAsync(source);
+
+        Assert.Null(image.DisplayTitle);
+        Assert.Contains("resource", image.TitleWarning, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(XexTitleFixtures.DefaultTitleId, image.TitleId);
+        Assert.Equal((byte)2, image.DiscNumber);
+    }
+
+    [Fact]
+    public async Task OpenAsync_EncryptedLzxTitleKeepsOriginalExecutableBytesAndDiscMetadata()
+    {
+        const string title = "Synthetic café 世界";
+        var executable = XexTitleFixtures.CreateProtectedExecutable(title, compression: 2);
+        var source = CreateImage(0, executableOverride: executable);
+
+        var image = await IsoImage.OpenAsync(source);
+
+        Assert.Equal(title, image.DisplayTitle);
+        Assert.Null(image.TitleWarning);
+        Assert.Equal(XexTitleFixtures.DefaultTitleId, image.TitleId);
+        Assert.Equal(XexTitleFixtures.DefaultMediaId, image.MediaId);
+        Assert.Equal((byte)2, image.DiscNumber);
+        Assert.Equal((byte)3, image.DiscCount);
+        var file = Assert.IsAssignableFrom<VirtualFile>(image.Root.Find("default.xex"));
+        var exported = new byte[checked((int)file.Length)];
+        await file.ReadExactlyAsync(0, exported);
+        Assert.Equal(executable, exported);
+    }
+
+    [Fact]
     public async Task OpenAsync_AllowsDistinctEmptyDirectoriesToShareZeroExtent()
     {
         var source = CreateImage(0, Shape.EmptyDirectories);
@@ -162,12 +217,14 @@ public sealed class IsoImageTests
         Assert.Contains("execution metadata", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static SparseVirtualFile CreateImage(long partitionOffset, Shape shape = Shape.Simple)
+    private static SparseVirtualFile CreateImage(long partitionOffset, Shape shape = Shape.Simple,
+        byte[]? executableOverride = null)
     {
         var source = new SparseVirtualFile("synthetic.iso", partitionOffset + PartitionLength);
         var descriptor = new byte[2048];
         Encoding.ASCII.GetBytes(DescriptorMagic).CopyTo(descriptor, 0);
         BinaryPrimitives.WriteUInt32LittleEndian(descriptor.AsSpan(20), RootSector);
+        var executable = executableOverride ?? MakeExecutable(shape);
         var rootLength = shape is Shape.NestedFile or Shape.EmptyDirectories or
             Shape.OutOfRangeDirectory or Shape.CyclicDirectoryExtent ? 192u : 64u;
         if (shape is Shape.MalformedTree or Shape.EmptyName or Shape.MissingDefaultExecutable)
@@ -179,10 +236,10 @@ public sealed class IsoImageTests
         switch (shape)
         {
             case Shape.Simple:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false);
                 break;
             case Shape.NestedFile:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false, right: 16);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false, right: 16);
                 WriteEntry(root, 64, "DATA", NestedDirectorySector, 32, isDirectory: true);
                 var nested = new byte[32];
                 WriteEntry(nested, 0, "inside.bin", 4, 4, isDirectory: false);
@@ -190,26 +247,26 @@ public sealed class IsoImageTests
                 source.Write(partitionOffset + 4 * 2048L, [0x11, 0x22, 0x33, 0x44]);
                 break;
             case Shape.EmptyDirectories:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false, right: 16);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false, right: 16);
                 WriteEntry(root, 64, "EMPTYA", 0, 0, isDirectory: true, right: 32);
                 WriteEntry(root, 128, "EMPTYB", 0, 0, isDirectory: true);
                 break;
             case Shape.MalformedTree:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false, right: ushort.MaxValue);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false, right: ushort.MaxValue);
                 break;
             case Shape.OutOfRangeDirectory:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false, right: 16);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false, right: 16);
                 WriteEntry(root, 64, "BADDIR", 0x100, 2048, isDirectory: true);
                 break;
             case Shape.CyclicDirectoryExtent:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false, right: 16);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false, right: 16);
                 WriteEntry(root, 64, "DIR", NestedDirectorySector, 32, isDirectory: true);
                 var self = new byte[32];
                 WriteEntry(self, 0, "SELF", NestedDirectorySector, 32, isDirectory: true);
                 source.Write(partitionOffset + NestedDirectorySector * 2048L, self);
                 break;
             case Shape.EmptyName:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false);
                 root[13] = 0;
                 break;
             case Shape.MissingDefaultExecutable:
@@ -219,13 +276,13 @@ public sealed class IsoImageTests
             case Shape.ExecutionInfoOutsideExecutable:
             case Shape.NoExecutionMetadata:
             case Shape.InvalidXexMagic:
-                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, 64, isDirectory: false);
+                WriteEntry(root, 0, "default.xex", DefaultExecutableSector, checked((uint)executable.Length), isDirectory: false);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(shape));
         }
         source.Write(partitionOffset + RootSector * 2048L, root);
-        source.Write(partitionOffset + DefaultExecutableSector * 2048L, MakeExecutable(shape));
+        source.Write(partitionOffset + DefaultExecutableSector * 2048L, executable);
         return source;
     }
 

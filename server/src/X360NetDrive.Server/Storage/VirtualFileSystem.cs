@@ -4,8 +4,16 @@ namespace X360NetDrive.Server.Storage;
 
 public abstract class VirtualNode(string name, DateTimeOffset lastModified)
 {
-    public string Name { get; } = name;
+    public string Name { get; private set; } = name;
     public DateTimeOffset LastModified { get; } = lastModified;
+
+    internal void Rename(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name is "." or ".." ||
+            name.IndexOfAny(['/', '\\', '\0']) >= 0)
+            throw new ArgumentException("Invalid virtual file name.", nameof(name));
+        Name = name;
+    }
 }
 
 public sealed class VirtualDirectory(string name, DateTimeOffset lastModified)
@@ -13,6 +21,16 @@ public sealed class VirtualDirectory(string name, DateTimeOffset lastModified)
 {
     private readonly List<VirtualNode> children = [];
     public IReadOnlyList<VirtualNode> Children => children;
+
+    internal void RenameChild(string name, string newName)
+    {
+        var node = children.Find(child => string.Equals(child.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException($"Virtual directory does not contain {name}.");
+        if (children.Any(child => !ReferenceEquals(child, node) &&
+            string.Equals(child.Name, newName, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException($"Duplicate virtual file name: {newName}");
+        node.Rename(newName);
+    }
 
     public void Add(VirtualNode node)
     {

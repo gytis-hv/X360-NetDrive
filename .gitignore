@@ -5,5 +5,5 @@ build_work/
 *.img
 *.img.xz
 *.iso
-config/userconf.txt
+rpi/config/userconf.txt
 TestResults/

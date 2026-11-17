@@ -8,9 +8,10 @@ builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 
 var cacheDirectory = builder.Configuration["cache"]
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "X360-NetDrive", "server-cache");
 var includeGod = builder.Configuration.GetValue("god", false);
+var isoMetadataLayout = builder.Configuration.GetValue("iso-metadata-layout", true);
 var app = builder.Build();
 using var library = await IsoLibrary.OpenAsync(builder.Configuration["iso"], builder.Configuration["iso-root"],
-    builder.Configuration["title"], includeGod, cacheDirectory, app.Logger);
+    builder.Configuration["title"], includeGod, cacheDirectory, app.Logger, isoMetadataLayout: isoMetadataLayout);
 var root = library.Root;
 var snapshot = library.Snapshot;
 var disk = new Fat32Disk(root, "X360NET", Convert.ToUInt32(snapshot[..8], 16));
@@ -24,14 +25,16 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
 }));
 app.MapGet("/health", () => Results.Ok(new
 {
-    Status = "ready", TitleId = singleGame?.TitleId, Games = library.Games.Count, Excluded = library.Excluded.Count
+    Status = "ready", TitleId = singleGame?.TitleId, Games = library.Games.Count,
+    Excluded = library.Excluded.Count, Warnings = library.Warnings.Count
 }));
 app.MapGet("/", () => Results.Json(new
 {
     Title = singleGame?.Title ?? "ISO library", TitleId = singleGame?.TitleId, MediaId = singleGame?.MediaId,
     WebDav = "/webdav/", Disk = exportPath, DiskBytes = disk.Length,
     LaunchPath = singleGame?.LaunchPath, GodPackage = singleGame?.GodPackage,
-    Games = library.Games, Excluded = library.Excluded,
+    Games = library.Games, Excluded = library.Excluded, Warnings = library.Warnings,
+    IsoMetadataLayout = isoMetadataLayout,
     ReadOnly = true
 }));
 app.MapMethods(exportPath, ["GET", "HEAD"], () =>
@@ -40,8 +43,8 @@ app.MapMethods(exportPath, ["GET", "HEAD"], () =>
         enableRangeProcessing: true));
 app.Map("/webdav", (IApplicationBuilder branch) =>
     branch.Run(context => WebDavEndpoint.HandleAsync(context, root, snapshot)));
-app.Logger.LogInformation("Ready: {Games} ISO(s), {Excluded} excluded, virtual disk {Bytes} bytes at {DiskPath}",
-    library.Games.Count, library.Excluded.Count, disk.Length, exportPath);
+app.Logger.LogInformation("Ready: {Games} ISO(s), {Excluded} excluded, {Warnings} warnings, virtual disk {Bytes} bytes at {DiskPath}",
+    library.Games.Count, library.Excluded.Count, library.Warnings.Count, disk.Length, exportPath);
 await app.RunAsync();
 
 public partial class Program;

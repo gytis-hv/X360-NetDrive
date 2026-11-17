@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using X360NetDrive.Server.Fat;
 using X360NetDrive.Server.God;
@@ -11,6 +12,7 @@ public sealed record LibraryGame(string Source, string Title, string TitleId, st
     byte DiscNumber, byte DiscCount, string LaunchPath, string? GodPackage);
 
 public sealed record ExcludedIso(string Source, string Reason);
+public sealed record LibraryWarning(string Source, string Reason);
 
 public sealed class IsoLibrary : IDisposable
 {
@@ -18,15 +20,17 @@ public sealed class IsoLibrary : IDisposable
     public VirtualDirectory Root { get; }
     public IReadOnlyList<LibraryGame> Games { get; }
     public IReadOnlyList<ExcludedIso> Excluded { get; }
+    public IReadOnlyList<LibraryWarning> Warnings { get; }
     public string Snapshot { get; }
     public bool IsSingleIso { get; }
 
     private IsoLibrary(VirtualDirectory root, LibraryGame[] games, ExcludedIso[] excluded,
-        string snapshot, bool isSingleIso, List<IDisposable> resources)
+        LibraryWarning[] warnings, string snapshot, bool isSingleIso, List<IDisposable> resources)
     {
         Root = root;
         Games = games;
         Excluded = excluded;
+        Warnings = warnings;
         Snapshot = snapshot;
         IsSingleIso = isSingleIso;
         this.resources = resources;
@@ -34,7 +38,7 @@ public sealed class IsoLibrary : IDisposable
 
     public static async Task<IsoLibrary> OpenAsync(string? isoPath, string? isoRoot,
         string? titleName, bool includeGod, string cacheDirectory, ILogger logger,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool isoMetadataLayout = true)
     {
         bool single = !string.IsNullOrWhiteSpace(isoPath);
         bool recursive = !string.IsNullOrWhiteSpace(isoRoot);
@@ -70,8 +74,10 @@ public sealed class IsoLibrary : IDisposable
         {
             var games = new List<LibraryGame>();
             var excluded = new List<ExcludedIso>();
+            var warnings = new List<LibraryWarning>();
             var virtualPaths = new List<string>();
-            var identities = new List<object>();
+            var identities = new List<LibraryIdentity>();
+            var folderGroups = new Dictionary<string, (int FirstIndex, int Count)>(StringComparer.OrdinalIgnoreCase);
             var tree = new VirtualDirectory("Games", DateTimeOffset.UnixEpoch);
             VirtualDirectory? content = null;
             DateTimeOffset lastModified = DateTimeOffset.MinValue;
@@ -86,11 +92,62 @@ public sealed class IsoLibrary : IDisposable
                 {
                     logger.LogInformation("Indexing ISO {Source}", relative);
                     file = new LocalVirtualFile(path);
-                    var iso = await IsoImage.OpenAsync(file, cancellationToken);
-                    string title = titleName ?? Path.GetFileNameWithoutExtension(path);
-                    if (single && title.IndexOfAny(['/', '\\']) >= 0)
+                    var iso = await IsoImage.OpenAsync(file, cancellationToken, readTitle: isoMetadataLayout);
+                    string title = titleName ?? (isoMetadataLayout ? iso.DisplayTitle : null)
+                        ?? Path.GetFileNameWithoutExtension(path);
+                    if (single && (!isoMetadataLayout || titleName is not null) && title.IndexOfAny(['/', '\\']) >= 0)
                         throw new ArgumentException("The --title value must be a single directory name.");
-                    string virtualPath = recursive ? relative[..^4] : title;
+                    if (isoMetadataLayout && titleName is null && iso.DisplayTitle is null)
+                        ReportWarning(relative, $"Using ISO filename for display title: {iso.TitleWarning}");
+                    string virtualPath;
+                    if (isoMetadataLayout)
+                    {
+                        string safeTitle = MakeTitleComponent(title);
+                        if (safeTitle != title)
+                            ReportWarning(relative, $"Display title normalized for FAT folder name: {safeTitle}");
+                        string metadataSuffix = iso.TitleId == 0 ? string.Empty : $"[{iso.TitleId:X8}]";
+                        if (iso.DiscNumber != 0 && iso.DiscCount != 0 &&
+                            (iso.DiscNumber != 1 || iso.DiscCount != 1))
+                            metadataSuffix += $"[Disc {iso.DiscNumber} of {iso.DiscCount}]";
+                        if (iso.MediaId != 0)
+                            metadataSuffix += $"[{iso.MediaId:X8}]";
+                        string folder = metadataSuffix.Length == 0 ? safeTitle : $"{safeTitle} {metadataSuffix}";
+                        string basePath = $"ISOs/{folder}";
+                        if (folderGroups.TryGetValue(basePath, out var group))
+                        {
+                            int sequence = group.Count + 1;
+                            if (group.Count == 1)
+                            {
+                                string firstPath = $"ISOs/{folder} (1)";
+                                (tree.Find("ISOs") as VirtualDirectory ?? throw new InvalidDataException(
+                                    "Metadata folder parent is missing.")).RenameChild(folder, $"{folder} (1)");
+                                virtualPaths[group.FirstIndex] = firstPath;
+                                games[group.FirstIndex] = games[group.FirstIndex] with
+                                {
+                                    LaunchPath = $"Games/{firstPath}/default.xex"
+                                };
+                                identities[group.FirstIndex] = identities[group.FirstIndex] with
+                                {
+                                    VirtualPath = firstPath
+                                };
+                            }
+                            virtualPath = basePath;
+                            do
+                            {
+                                virtualPath = $"{basePath} ({sequence++})";
+                            }
+                            while (virtualPaths.Contains(virtualPath, StringComparer.OrdinalIgnoreCase));
+                            folderGroups[basePath] = (group.FirstIndex, sequence - 1);
+                            ReportWarning(relative, $"Duplicate ISO metadata folder Games/ISOs/{folder}; exposed as Games/{virtualPath}.");
+                        }
+                        else
+                        {
+                            folderGroups.Add(basePath, (games.Count, 1));
+                            virtualPath = basePath;
+                        }
+                    }
+                    else
+                        virtualPath = recursive ? relative[..^4] : title;
                     if (virtualPaths.Any(existing =>
                         string.Equals(existing, virtualPath, StringComparison.OrdinalIgnoreCase) ||
                         existing.StartsWith(virtualPath + "/", StringComparison.OrdinalIgnoreCase) ||
@@ -117,7 +174,14 @@ public sealed class IsoLibrary : IDisposable
                             cancellationToken: cancellationToken);
                         if (content?.Find(god.PackageRelativePath) is not null ||
                             content?.Find(god.PackageRelativePath + ".data") is not null)
-                            throw new InvalidDataException($"Duplicate GOD package path: Content/{god.PackageRelativePath}");
+                        {
+                            string reason = $"Duplicate GOD package path: Content/{god.PackageRelativePath}";
+                            if (!isoMetadataLayout)
+                                throw new InvalidDataException(reason);
+                            ReportWarning(relative, $"{reason}; keeping the ISO view without an additional GOD package.");
+                            god.Dispose();
+                            god = null;
+                        }
                     }
                     var parent = tree;
                     foreach (var segment in segments[..^1])
@@ -143,7 +207,7 @@ public sealed class IsoLibrary : IDisposable
                         iso.DiscNumber, iso.DiscCount, $"Games/{virtualPath}/default.xex",
                         god is null ? null : $"Content/{god.PackageRelativePath}"));
                     virtualPaths.Add(virtualPath);
-                    identities.Add(new { file.SourcePath, file.Length, Modified = file.LastModified.UtcTicks, virtualPath });
+                    identities.Add(new LibraryIdentity(file.SourcePath, file.Length, file.LastModified.UtcTicks, virtualPath));
                     if (file.LastModified > lastModified)
                         lastModified = file.LastModified;
                     resources.Add(file);
@@ -175,18 +239,39 @@ public sealed class IsoLibrary : IDisposable
             root.Add(gameRoot);
             if (content is not null)
                 root.Add(content);
-            string identity = JsonSerializer.Serialize(new { Layout = "library-v1", includeGod, Sources = identities });
+            string identity = JsonSerializer.Serialize(new { Layout = "library-v2", includeGod, isoMetadataLayout, Sources = identities });
             string snapshot = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)))
                 .ToLowerInvariant()[..24];
-            var library = new IsoLibrary(root, games.ToArray(), excluded.ToArray(), snapshot, single, resources);
+            var library = new IsoLibrary(root, games.ToArray(), excluded.ToArray(), warnings.ToArray(), snapshot, single, resources);
             published = true;
             return library;
+
+            void ReportWarning(string relative, string reason)
+            {
+                logger.LogWarning("ISO {Source}: {Reason}", relative, reason);
+                warnings.Add(new LibraryWarning(relative, reason));
+            }
         }
         finally
         {
             if (!published)
                 DisposeResources(resources);
         }
+    }
+
+    private static string MakeTitleComponent(string title)
+    {
+        var result = new StringBuilder();
+        foreach (var rune in title.EnumerateRunes())
+        {
+            if (result.Length + rune.Utf16SequenceLength > 160)
+                break;
+            bool invalid = Rune.IsControl(rune) || rune.Value is 0xFFFE or 0xFFFF ||
+                (rune.IsBmp && "\"*/:<>?\\|".Contains((char)rune.Value));
+            result.Append(invalid ? "_" : rune.ToString());
+        }
+        string value = result.ToString().Trim().TrimEnd(' ', '.');
+        return value.Length == 0 ? "Untitled" : value;
     }
 
     private static void MergeContent(VirtualDirectory destination, VirtualDirectory source)
@@ -198,6 +283,7 @@ public sealed class IsoLibrary : IDisposable
             else
                 destination.Add(child);
         }
+
     }
 
     private static void DisposeResources(List<IDisposable> resources)
@@ -208,4 +294,6 @@ public sealed class IsoLibrary : IDisposable
     }
 
     public void Dispose() => DisposeResources(resources);
+
+    private sealed record LibraryIdentity(string SourcePath, long Length, long Modified, string VirtualPath);
 }

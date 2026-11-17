@@ -17,8 +17,11 @@ public sealed class IsoImage
     public required byte DiscNumber { get; init; }
     public required byte DiscCount { get; init; }
     public required long PartitionOffset { get; init; }
+    public string? DisplayTitle { get; init; }
+    public string? TitleWarning { get; init; }
 
-    public static async Task<IsoImage> OpenAsync(VirtualFile source, CancellationToken cancellationToken = default)
+    public static async Task<IsoImage> OpenAsync(VirtualFile source, CancellationToken cancellationToken = default,
+        bool readTitle = true)
     {
         var descriptor = new byte[2048];
         long? found = null;
@@ -60,15 +63,18 @@ public sealed class IsoImage
                 throw new InvalidDataException("XEX execution metadata lies outside the executable.");
             var info = new byte[24];
             await executable.ReadExactlyAsync(infoOffset, info, cancellationToken);
+            uint titleId = BinaryPrimitives.ReadUInt32BigEndian(info.AsSpan(12));
+            var title = readTitle ? await XexTitleReader.ReadAsync(executable, titleId, cancellationToken) : null;
             return new IsoImage
             {
                 Partition = partition, Root = root, PartitionOffset = partitionOffset,
                 MediaId = BinaryPrimitives.ReadUInt32BigEndian(info),
                 Version = BinaryPrimitives.ReadUInt32BigEndian(info.AsSpan(4)),
                 BaseVersion = BinaryPrimitives.ReadUInt32BigEndian(info.AsSpan(8)),
-                TitleId = BinaryPrimitives.ReadUInt32BigEndian(info.AsSpan(12)),
+                TitleId = titleId,
                 Platform = info[16], ExecutableType = info[17],
-                DiscNumber = info[18], DiscCount = info[19]
+                DiscNumber = info[18], DiscCount = info[19],
+                DisplayTitle = title?.Title, TitleWarning = title?.Warning
             };
         }
         throw new InvalidDataException("The XEX does not contain execution metadata.");
