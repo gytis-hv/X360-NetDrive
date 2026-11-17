@@ -15,6 +15,7 @@ a modified console with XBDM; GOD/SVOD projection is experimental.
 
 - [Build and test](BUILDING.md): build the server and Raspberry Pi image from source.
 - [Prepare and use](SETUP.md): flash, configure, connect, operate, and troubleshoot.
+- [GitHub releases](BUILDING.md#github-releases): tagged builds and downloadable artifacts.
 - [Server third-party notices](server/THIRD_PARTY_NOTICES.md): dependency licenses
   included with server builds and published output.
 

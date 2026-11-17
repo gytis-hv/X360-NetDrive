@@ -74,6 +74,22 @@ dotnet .\server\src\X360NetDrive.Server\bin\Release\net10.0\publish\X360NetDrive
   --urls "http://192.168.1.50:8081"
 ```
 
+For a GitHub release, extract the server archive for your host. It contains a
+self-contained executable and its required third-party notices; .NET does not
+need to be installed separately. Linux hosts still need compatible system
+libraries, including ICU and OpenSSL. For example, on Windows:
+
+```powershell
+.\X360NetDrive.Server.exe --iso-root "D:\Xbox360\ISOs" --urls "http://192.168.1.50:8081"
+```
+
+On Linux, from the extracted archive directory:
+
+```bash
+chmod +x ./X360NetDrive.Server
+./X360NetDrive.Server --iso-root "/path/to/ISOs" --urls "http://192.168.1.50:8081"
+```
+
 Replace the ISO path and host LAN address. Keep the process running. The host
 must have access to the ISO files and the Pi must be able to reach the port.
 The server scans recursively for `.iso` files, ignores other files and does
@@ -117,11 +133,11 @@ termination can leave it behind.
 
 ## 2. Flash the Pi image
 
-Build a private image using [Building and testing](BUILDING.md), or use an
-image whose provenance and account configuration you trust. The current
-builder creates a **local account in every image**; SSH is disabled by default
-and enabled only in the debug build. Do not publish images containing your
-account or distribute credentials.
+Build a public image using [Building and testing](BUILDING.md), or download a
+release and verify its SHA-256 using `SHA256SUMS.txt`. Decompress `.img.xz`
+to `.img` if your imager does not support `.xz`. Public images have no
+interactive login or SSH; a separate private debug build can enable them.
+Never publish debug images containing your account or distribute credentials.
 
 Flash the `.img` using Raspberry Pi Imager or balenaEtcher. Disable Raspberry
 Pi Imager's OS customization: the image is already configured. Flashing erases

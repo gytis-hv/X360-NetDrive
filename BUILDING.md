@@ -23,6 +23,24 @@ matching .NET 10 ASP.NET Core runtime on the host. Keep the published files
 together, including `THIRD_PARTY_NOTICES.md`. For running it, see
 [direct ISO setup](SETUP.md#option-b-direct-iso-mode).
 
+### Self-contained single-file server
+
+For example, build the Windows x64 executable from PowerShell:
+
+```powershell
+dotnet publish .\server\src\X360NetDrive.Server\X360NetDrive.Server.csproj `
+  --configuration Release --runtime win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:DebugType=none -p:DebugSymbols=false --output .\publish\win-x64
+```
+
+Use `linux-x64` for Linux x64. These are self-contained: the host does not need
+a separate .NET runtime. Linux still requires compatible system libraries,
+including ICU and OpenSSL. The executable may extract native runtime files to a
+temporary location at startup. Keep `THIRD_PARTY_NOTICES.md` with the executable
+when distributing it. The release workflow packages only the executable and
+notices; see [GitHub releases](#github-releases).
+
 ## Raspberry Pi image
 
 ### Prerequisites
@@ -40,17 +58,36 @@ sudo apt update
 sudo apt install wget xz-utils parted e2fsprogs qemu-user-binfmt systemd-container
 ```
 
-It downloads the 2024-11-19 Raspberry Pi OS Lite ARMHF image and installs
-additional packages inside it. The download and package versions are not fully
-pinned or verified by the current builder; do not treat the output as a
-reproducible or independently verified release.
+It downloads the 2024-11-19 Raspberry Pi OS Lite ARMHF image, verifies its
+SHA-256, and installs additional packages inside it. Installed package versions
+are not pinned, so builds are not reproducible.
 
-**The current builder always provisions a local account**, even when SSH is
-disabled. Images built with your credentials are private: do not publish them.
-A public no-login image build is not implemented yet.
+### Public image
 
-### Create private account input
+Run from the `rpi` directory so the builder finds its assets:
 
+```bash
+cd rpi
+sudo bash build_image.sh
+```
+
+The public image has no provisioned interactive user, locks root, and masks
+first-boot account creation, SSH and console getty services. It does not accept
+an account file. Configure Wi-Fi and server settings on `bootfs` as described
+in [Prepare and use](SETUP.md).
+
+The builder caches the base archive in `rpi/build_work/` and writes the raw
+`rpi/x360-netdrive-v1.0.img`. A cached archive that fails checksum verification
+must be removed and downloaded again. **The output image is overwritten by the
+next build.** Back it up first if needed. The builder uses `/mnt/x360_rpi_img`:
+do not run concurrent builds or use that mount point for anything else.
+The image build needs root and can modify loop devices and mounts; run it only
+on a suitable isolated build host.
+
+### Private debug image
+
+For SSH access and periodic diagnostic snapshots, create a private debug image.
+It provisions an account; **never publish a debug image or its account file**.
 Create a file outside the repository containing exactly one line:
 
 ```text
@@ -77,38 +114,19 @@ openssl passwd -6 >> "$HOME/x360-private/userconf.txt"
 Enter and confirm the password at the prompts. Check that the file contains
 one `username:hash` line, without sharing it.
 
-### Build
-
-Run from the `rpi` directory so the builder finds its assets:
-
-```bash
-cd rpi
-sudo bash build_image.sh /path/to/userconf.txt
-```
-
-For the example above, supply the absolute path to the file in
-`$HOME/x360-private/`; the `userconf.txt` path must remain accessible to root.
-With no argument, it reads `config/userconf.txt` relative to `rpi/`.
-The builder caches the base archive in `rpi/build_work/` and writes
-`rpi/x360-netdrive-v1.0.img`. **It overwrites that output image on the next
-build.** Move or back up an image you want to keep before rebuilding.
-It also uses `/mnt/x360_rpi_img` as its mount point; do not run it concurrently
-with another build or against a mount point in use.
-
-The account is provisioned before the read-only overlay is enabled; the input
-`userconf.txt` is consumed inside the image. SSH is disabled by default, but
-the local account remains. The output is a raw `.img`, not an `.img.xz`.
-Flash it as described in [Prepare and use](SETUP.md).
-
-For a **private debug image** with SSH and periodic diagnostic snapshots:
+Build from `rpi/`:
 
 ```bash
 cd rpi
 sudo env HEADLESS_DEBUG=1 bash build_image.sh /path/to/userconf.txt
 ```
 
-This writes the same output filename as the normal build. Keep the image and
-its credentials private and use it only on a trusted network.
+For the example above, supply the absolute path to the file in
+`$HOME/x360-private/`; the `userconf.txt` path must remain accessible to root.
+With no argument, the debug build reads `config/userconf.txt` relative to `rpi/`.
+The account is provisioned before the overlay is enabled and the image's copy
+of `userconf.txt` is consumed. The debug build overwrites the same output filename
+as the public build. Use debug images only on a trusted network.
 
 ## Test Pi scripts
 
@@ -123,3 +141,23 @@ done
 
 These checks do not build, flash, or modify an image. A successful build or
 test run alone does not establish hardware or release readiness.
+
+## GitHub releases
+
+Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml).
+After tests pass, it builds the public no-login Pi image and single-file server
+executables for Windows x64 and Linux x64. Each server executable is smoke-tested
+in isolation. If all jobs succeed, a GitHub release is created with:
+
+- `x360-netdrive-rpi-zero2w.img.xz` — compressed raw SD-card image.
+- `x360-netdrive-server-win-x64.zip` and `x360-netdrive-server-linux-x64.zip`
+  — executable plus server third-party notices.
+- `SHA256SUMS.txt` — SHA-256 checksums of those three downloads.
+
+Verify the checksums after download. For the image, decompress the `.xz` to
+obtain the `.img` before flashing, or use an imager that supports `.xz`.
+Use an unmodified trusted image and check
+[setup instructions](SETUP.md#2-flash-the-pi-image).
+The workflow does not publish private debug images. A successful workflow is
+not a substitute for testing the image on hardware or reviewing third-party
+license obligations, including Raspberry Pi OS package obligations.

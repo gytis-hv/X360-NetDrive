@@ -1,0 +1,129 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Test server and Pi scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test server
+        run: dotnet test server/X360-NetDrive.slnx --configuration Release
+      - name: Test Pi scripts
+        run: |
+          python3 -m unittest discover -s rpi/tests -p 'test_*.py' -v
+          for script in rpi/build_image.sh rpi/scripts/*.sh; do
+            bash -n "$script"
+          done
+
+  server:
+    name: Server ${{ matrix.rid }}
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            rid: win-x64
+            executable: X360NetDrive.Server.exe
+          - os: ubuntu-24.04
+            rid: linux-x64
+            executable: X360NetDrive.Server
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Publish self-contained executable
+        shell: bash
+        run: |
+          dotnet publish server/src/X360NetDrive.Server/X360NetDrive.Server.csproj \
+            --configuration Release --runtime '${{ matrix.rid }}' --self-contained true \
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:DebugType=none -p:DebugSymbols=false --output publish
+      - name: Smoke-test executable in isolation
+        shell: bash
+        run: python .github/scripts/smoke-server.py 'publish/${{ matrix.executable }}'
+      - name: Package executable and notices
+        shell: bash
+        run: |
+          mkdir bundle artifacts
+          cp 'publish/${{ matrix.executable }}' publish/THIRD_PARTY_NOTICES.md bundle/
+          cd bundle
+          python -m zipfile -c '../artifacts/x360-netdrive-server-${{ matrix.rid }}.zip' \
+            '${{ matrix.executable }}' THIRD_PARTY_NOTICES.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.rid }}
+          path: artifacts/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  pi-image:
+    name: Public Raspberry Pi Zero 2 W image
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install image build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget xz-utils parted e2fsprogs qemu-user-static binfmt-support systemd-container
+      - name: Build public no-login image
+        working-directory: rpi
+        run: sudo env HEADLESS_DEBUG=0 bash build_image.sh
+      - name: Compress image
+        run: |
+          mkdir artifacts
+          xz -T2 -6 -c rpi/x360-netdrive-v1.0.img > artifacts/x360-netdrive-rpi-zero2w.img.xz
+          xz -t artifacts/x360-netdrive-rpi-zero2w.img.xz
+          test "$(stat -c %s artifacts/x360-netdrive-rpi-zero2w.img.xz)" -lt 2147483648
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-image
+          path: artifacts/*.img.xz
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish GitHub release
+    needs: [server, pi-image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Verify assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd release
+          test -f x360-netdrive-rpi-zero2w.img.xz
+          test -f x360-netdrive-server-win-x64.zip
+          test -f x360-netdrive-server-linux-x64.zip
+          sha256sum x360-netdrive-rpi-zero2w.img.xz \
+            x360-netdrive-server-win-x64.zip x360-netdrive-server-linux-x64.zip > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
+            x360-netdrive-rpi-zero2w.img.xz x360-netdrive-server-win-x64.zip \
+            x360-netdrive-server-linux-x64.zip SHA256SUMS.txt
