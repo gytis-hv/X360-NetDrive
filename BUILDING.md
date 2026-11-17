@@ -71,7 +71,8 @@ cd rpi
 sudo bash build_image.sh
 ```
 
-The public image has no provisioned interactive user, locks root, and masks
+The public build removes the base image's first-boot `pi` placeholder account
+and rejects unexpected interactive accounts. It locks root and masks
 first-boot account creation, SSH and console getty services. It does not accept
 an account file. Configure Wi-Fi and server settings on `bootfs` as described
 in [Prepare and use](SETUP.md).

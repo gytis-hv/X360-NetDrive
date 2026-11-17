@@ -14,8 +14,16 @@ for marker in userconf.txt ssh ssh.txt; do
     fi
 done
 
-if ! getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 { found = 1 } END { exit found }'; then
+accounts=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534')
+if [ "$MODE" = prepare ] && [[ "$accounts" == pi:x:1000:1000:*:/home/pi:/bin/bash ]] &&
+    [[ "$accounts" != *$'\n'* ]]; then
+    echo "Removing Raspberry Pi OS first-boot placeholder account: pi"
+    userdel --remove pi
+    accounts=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534')
+fi
+if [ -n "$accounts" ]; then
     echo "Public image contains an interactive user account." >&2
+    printf '%s\n' "$accounts" | cut -d: -f1,3 >&2
     exit 1
 fi
 

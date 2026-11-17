@@ -28,7 +28,18 @@ set -eu
 command=${0##*/}
 printf '%s\\n' "$command $*" >> "$CALLS"
 case "$command $*" in
-    'getent passwd') printf 'root:x:0:0:root:/root:/bin/bash\\n%s' "${EXTRA_PASSWD:-}" ;;
+    'getent passwd')
+        printf 'root:x:0:0:root:/root:/bin/bash\\n'
+        if [ ! -f "$CALLS.deleted" ]; then
+            printf '%s' "${EXTRA_PASSWD:-}"
+        fi
+        ;;
+    'userdel --remove pi')
+        if [ "${USERDEL_STATUS:-0}" -ne 0 ]; then
+            exit "$USERDEL_STATUS"
+        fi
+        touch "$CALLS.deleted"
+        ;;
     'getent shadow root') printf 'root:%s:19000:0:99999:7:::\\n' "${ROOT_HASH:-!locked}" ;;
     'passwd -l root') exit "${PASSWD_STATUS:-0}" ;;
     'systemctl mask '*) exit "${MASK_STATUS:-0}" ;;
@@ -38,7 +49,7 @@ esac
 """
         )
         stub.chmod(0o755)
-        for name in ("getent", "passwd", "systemctl"):
+        for name in ("getent", "passwd", "systemctl", "userdel"):
             (root / name).symlink_to(stub)
         self.env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", CALLS=str(self.calls))
 
@@ -63,6 +74,42 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("interactive user account", result.stderr)
         self.assertNotIn("passwd -l root", self.calls.read_text())
+
+    def test_public_image_removes_base_placeholder_before_locking_access(self):
+        self.env["EXTRA_PASSWD"] = "pi:x:1000:1000::/home/pi:/bin/bash\n"
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls.read_text().splitlines()
+        self.assertLess(calls.index("userdel --remove pi"), calls.index("passwd -l root"))
+        self.assertEqual(calls.count("getent passwd"), 2)
+
+    def test_public_image_rejects_unexpected_accounts_without_removing_them(self):
+        for accounts in (
+            "pi:x:1000:1000::/home/pi:/bin/bash\nother:x:1001:1001::/home/other:/bin/bash\n",
+            "pi:x:1001:1001::/home/pi:/bin/bash\n",
+            "pi:x:1000:1000::/home/other:/bin/bash\n",
+        ):
+            with self.subTest(accounts=accounts):
+                self.env["EXTRA_PASSWD"] = accounts
+                result = self.run_script()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("interactive user account", result.stderr)
+                self.assertNotIn("userdel", self.calls.read_text())
+                self.assertNotIn("passwd -l root", self.calls.read_text())
+
+    def test_public_image_surfaces_placeholder_removal_failure(self):
+        self.env["EXTRA_PASSWD"] = "pi:x:1000:1000::/home/pi:/bin/bash\n"
+        self.env["USERDEL_STATUS"] = "42"
+        result = self.run_script()
+        self.assertEqual(result.returncode, 42)
+        self.assertNotIn("passwd -l root", self.calls.read_text())
+
+    def test_public_image_verification_rejects_placeholder_without_removing_it(self):
+        self.env["EXTRA_PASSWD"] = "pi:x:1000:1000::/home/pi:/bin/bash\n"
+        result = self.run_script("verify")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("interactive user account", result.stderr)
+        self.assertNotIn("userdel", self.calls.read_text())
 
     def test_public_image_rejects_boot_account_and_ssh_markers(self):
         for marker in ("userconf.txt", "ssh", "ssh.txt"):
