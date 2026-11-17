@@ -1,0 +1,18 @@
+[Unit]
+Description=X360-NetDrive independent Wi-Fi setup
+Wants=NetworkManager.service
+After=NetworkManager.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/x360-netdrive.sh --wifi-only
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=60
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

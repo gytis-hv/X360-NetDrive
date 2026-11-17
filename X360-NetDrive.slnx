@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/X360NetDrive.Server/X360NetDrive.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/X360NetDrive.Server.Tests/X360NetDrive.Server.Tests.csproj" />
+  </Folder>
+</Solution>

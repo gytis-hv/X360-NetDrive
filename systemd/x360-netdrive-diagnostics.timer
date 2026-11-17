@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically save X360-NetDrive headless diagnostics
+
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=60
+Unit=x360-netdrive-diagnostics.service
+
+[Install]
+WantedBy=timers.target

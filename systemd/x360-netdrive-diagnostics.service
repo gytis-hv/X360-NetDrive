@@ -1,0 +1,10 @@
+[Unit]
+Description=Save X360-NetDrive headless diagnostics to bootfs
+RequiresMountsFor=/boot/firmware
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/x360-netdrive-diagnostics.sh
+TimeoutStartSec=30
+StandardOutput=journal+console
+StandardError=journal+console

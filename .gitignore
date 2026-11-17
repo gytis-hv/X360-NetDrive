@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+**/__pycache__/
+build_work/
+*.img
+*.img.xz
+*.iso
+config/userconf.txt
+TestResults/

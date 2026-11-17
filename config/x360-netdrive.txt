@@ -1,0 +1,16 @@
+# ==========================================
+# X360-NetDrive Configuration
+# ==========================================
+
+WIFI_SSID="Your_WiFi_Name"
+WIFI_PASSWORD="Your_WiFi_Password"
+WIFI_COUNTRY="US"
+
+# Base URL of your WebDAV server (no trailing slash)
+SERVER_URL="http://192.168.1.50:8080"
+# Optional: snapshot disk URL returned by the C# ISO server; bypasses folder mode.
+HTTP_DISK_URL=""
+
+# Number of virtual USB drives (LUNs) to mount:
+# Set to "auto" to detect Xbox_LUN1..8 on the server, or specify a number (1 to 8)
+LUN_COUNT=auto
