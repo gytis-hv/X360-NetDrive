@@ -6,4 +6,6 @@ build_work/
 *.img.xz
 *.iso
 rpi/config/userconf.txt
+rpi/control/x360-netdrive-control
+rpi/control/x360-netdrive-control.exe
 TestResults/

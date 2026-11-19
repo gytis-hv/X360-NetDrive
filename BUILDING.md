@@ -21,7 +21,7 @@ The framework-dependent publish is in
 `server/src/X360NetDrive.Server/bin/Release/net10.0/publish/`. It requires the
 matching .NET 10 ASP.NET Core runtime on the host. Keep the published files
 together, including `THIRD_PARTY_NOTICES.md`. For running it, see
-[direct ISO setup](SETUP.md#option-b-direct-iso-mode).
+[server setup](SETUP.md#1-prepare-the-content-host).
 
 ### Self-contained single-file server
 
@@ -51,7 +51,8 @@ mounts, and `systemd-nspawn`. Cross-architecture builds need working ARM user
 emulation/binfmt support. WSL2 requires these features to be available in its
 environment; they are not guaranteed in every WSL configuration.
 
-The builder lists these host packages:
+The builder needs Go 1.24 or newer on the host to cross-compile the lightweight
+web controller (no Go runtime is needed on the Pi), plus these packages:
 
 ```bash
 sudo apt update
@@ -68,7 +69,7 @@ Run from the `rpi` directory so the builder finds its assets:
 
 ```bash
 cd rpi
-sudo bash build_image.sh
+sudo env GO="$(command -v go)" bash build_image.sh
 ```
 
 The public build removes the base image's first-boot `pi` placeholder account
@@ -119,7 +120,7 @@ Build from `rpi/`:
 
 ```bash
 cd rpi
-sudo env HEADLESS_DEBUG=1 bash build_image.sh /path/to/userconf.txt
+sudo env HEADLESS_DEBUG=1 GO="$(command -v go)" bash build_image.sh /path/to/userconf.txt
 ```
 
 For the example above, supply the absolute path to the file in
@@ -143,12 +144,23 @@ done
 These checks do not build, flash, or modify an image. A successful build or
 test run alone does not establish hardware or release readiness.
 
+Test and build the Go controller from `rpi/control/`:
+
+```bash
+go test ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o x360-netdrive-control .
+```
+
+The image builder does this cross-compilation automatically and installs the
+executable with its systemd unit. No npm packages or frontend build are needed.
+
 ## GitHub releases
 
 Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml).
 After tests pass, it builds the public no-login Pi image and single-file server
 executables for Windows x64 and Linux x64. Each server executable is smoke-tested
-in isolation. If all jobs succeed, a GitHub release is created with:
+in isolation. If all jobs succeed, the workflow creates a GitHub release or
+uploads to the existing release for the tag, replacing same-named assets:
 
 - `x360-netdrive-rpi-zero2w.img.xz` — compressed raw SD-card image.
 - `x360-netdrive-server-win-x64.zip` and `x360-netdrive-server-linux-x64.zip`

@@ -1,0 +1,22 @@
+[Unit]
+Description=X360-NetDrive web control
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/x360-netdrive-control
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/x360-netdrive
+ReadWritePaths=/boot/firmware/x360-netdrive
+RuntimeDirectory=x360-netdrive
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

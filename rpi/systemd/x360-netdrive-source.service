@@ -1,0 +1,17 @@
+[Unit]
+Description=X360-NetDrive network storage source
+After=network-online.target NetworkManager.service x360-netdrive-wifi.service
+Wants=network-online.target x360-netdrive-wifi.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/local/bin/x360-netdrive-control --prepare-sources
+ExecStart=/usr/local/bin/x360-netdrive.sh --source-only
+ExecStop=/usr/local/bin/x360-netdrive.sh --disconnect
+ExecStopPost=/usr/local/bin/x360-netdrive.sh --disconnect
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

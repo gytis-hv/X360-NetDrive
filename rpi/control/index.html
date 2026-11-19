@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>X360-NetDrive control</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>X360-NetDrive</h1>
+  <p>Saved servers and one fixed USB drive. <a href="/">Refresh status</a></p>
+  <form method="post" action="/logout" aria-label="Sign out">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit">Sign out</button>
+  </form>
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  {{if .Message}}<p role="status">{{.Message}}</p>{{end}}
+  <section aria-labelledby="status">
+    <h2 id="status">Status</h2>
+    <dl>
+      <dt>Network source</dt><dd>{{.Source.ActiveState}} / {{.Source.SubState}} (result: {{.Source.Result}})</dd>
+      <dt>USB attachment</dt><dd>{{.USB.ActiveState}} / {{.USB.SubState}} (result: {{.USB.Result}})</dd>
+    </dl>
+    <p>The selected server below is a saved setting, not proof the Xbox has detected a drive.
+      An active source service means source setup completed.</p>
+    {{if not .Managed}}<p>No saved profiles yet. Startup still uses the original bootfs configuration.</p>{{end}}
+  </section>
+  <form method="post" action="/" aria-labelledby="add-server">
+    <h2 id="add-server">Add server</h2>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="action" value="add">
+    <label for="name">Name (required)</label>
+    <input id="name" name="name" required maxlength="80">
+    <label for="url">Server URL (required)</label>
+    <input id="url" name="url" type="url" required maxlength="2048" spellcheck="false" autocorrect="off" autocapitalize="none" aria-describedby="url-help">
+    <p id="url-help">Enter the X360 Net Server base address. WebDAV folders are not supported.</p>
+    <button type="submit">Save server</button>
+  </form>
+  <section aria-labelledby="servers">
+    <h2 id="servers">Saved servers</h2>
+    <p>Save multiple servers and mount one at a time. The selected server reconnects automatically at boot.</p>
+    <p>Mounting another server replaces the current source on the same USB device (LUN0).
+      Stop every game and return to the dashboard first.</p>
+    {{range .Servers}}
+    <article>
+      <h3>{{.Name}}</h3>
+      <p class="address">{{.URL}}</p>
+      <form method="post" action="/" aria-label="Mount {{.Name}}">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="server" value="{{.ID}}">
+        <label class="choice"><input type="checkbox" name="confirm" value="yes" required> I have stopped using the USB drive (required).</label>
+        <button type="submit" name="action" value="mount">Mount server</button>
+      </form>
+      <form method="post" action="/" aria-label="Delete {{.Name}}">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="server" value="{{.ID}}">
+        <button type="submit" name="action" value="remove">Delete saved server</button>
+      </form>
+    </article>
+    {{else}}<p>No servers saved.</p>{{end}}
+  </section>
+  <section aria-labelledby="drive">
+    <h2 id="drive">USB drive</h2>
+    {{if .AssignmentError}}<p class="error" role="alert">{{.AssignmentError}}</p>{{end}}
+    <p>Selected server: <strong>{{if .ActiveServer}}{{.ActiveServer}}{{else}}None{{end}}</strong></p>
+    <p>The bridge always uses the same USB identity and LUN0, with no slot renumbering.
+      The Xbox still assigns the drive name. Keep the same folder layout on each server
+      so Aurora's scan path remains usable; a rescan may be needed after switching libraries.</p>
+    <form method="post" action="/" aria-label="Unmount server">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="choice"><input type="checkbox" name="confirm" value="yes" required> I have stopped using the USB drive (required).</label>
+      <button type="submit" name="action" value="unmount">Unmount server</button>
+    </form>
+    <form method="post" action="/" aria-labelledby="retry">
+      <h3 id="retry">Reconnect selected server</h3>
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label class="choice"><input type="checkbox" name="confirm" value="yes" required> I have stopped using the USB drive (required).</label>
+      <button type="submit" name="action" value="apply">Reconnect and attach</button>
+    </form>
+  </section>
+  <form method="post" action="/" aria-labelledby="usb">
+    <h2 id="usb">Temporary USB controls</h2>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <p>Detaching leaves the source connected and keeps the selected server.
+      It attaches again at reboot. To stay disconnected after reboot, unmount the server above.</p>
+    <button type="submit" name="action" value="attach" formnovalidate>Attach USB drive</button>
+    <label class="choice"><input type="checkbox" name="confirm" value="yes" required> I have stopped using the USB drive (required for detach).</label>
+    <button type="submit" name="action" value="detach">Detach USB drive</button>
+  </form>
+  <section aria-labelledby="log">
+    <h2 id="log">Recent bridge log</h2>
+    <pre>{{.Log}}</pre>
+  </section>
+</main>
+</body>
+</html>

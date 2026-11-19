@@ -31,18 +31,13 @@ app.MapGet("/health", () => Results.Ok(new
 app.MapGet("/", () => Results.Json(new
 {
     Title = singleGame?.Title ?? "ISO library", TitleId = singleGame?.TitleId, MediaId = singleGame?.MediaId,
-    WebDav = "/webdav/", Disk = exportPath, DiskBytes = disk.Length,
+    Disk = exportPath, DiskBytes = disk.Length,
     LaunchPath = singleGame?.LaunchPath, GodPackage = singleGame?.GodPackage,
     Games = library.Games, Excluded = library.Excluded, Warnings = library.Warnings,
     IsoMetadataLayout = isoMetadataLayout,
     ReadOnly = true
 }));
-app.MapMethods(exportPath, ["GET", "HEAD"], () =>
-    Results.Stream(new VirtualReadStream(disk), "application/octet-stream",
-        lastModified: disk.LastModified, entityTag: WebDavEndpoint.ETag(snapshot, exportPath),
-        enableRangeProcessing: true));
-app.Map("/webdav", (IApplicationBuilder branch) =>
-    branch.Run(context => WebDavEndpoint.HandleAsync(context, root, snapshot)));
+app.MapMethods(exportPath, ["GET", "HEAD"], () => DiskEndpoint.Read(disk, snapshot, exportPath));
 app.Logger.LogInformation("Ready: {Games} ISO(s), {Excluded} excluded, {Warnings} warnings, virtual disk {Bytes} bytes at {DiskPath}",
     library.Games.Count, library.Excluded.Count, library.Warnings.Count, disk.Length, exportPath);
 await app.RunAsync();

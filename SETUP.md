@@ -1,60 +1,19 @@
 # Prepare and use
 
-This guide covers both WebDAV folder mode and direct ISO mode. You need a
+This guide covers X360 Net Server and its ISO library. You need a
 Raspberry Pi Zero 2 W, a microSD card of at least 8 GB, a data-capable micro-USB
 cable, a 2.4 GHz Wi-Fi network, and a host that remains available while using
 the console. Use only content you are entitled to use.
 
 The bridge presents read-only storage. It does not sign, modify, or license
 games; stock consoles remain subject to their normal content restrictions.
-The ISO server and example WebDAV server have no authentication. Restrict
+The server has no authentication. Restrict
 access to a trusted LAN and firewall; do not expose them to the internet.
 
 ## 1. Prepare the content host
 
-Choose **one** mode. In either mode, configure the host firewall to allow the
-Pi to reach the selected address and port, and keep the server running.
-
-### Option A: WebDAV folder mode
-
-Create a directory on your host containing `Xbox_LUN1` through `Xbox_LUN8`,
-as needed. Put extracted game files or GOD containers inside these directories.
-For example:
-
-```text
-D:\Xbox360\
-  Xbox_LUN1\
-    My Game\default.xex
-  Xbox_LUN2\
-```
-
-Each LUN becomes a separate virtual drive. FAT32 files must be smaller than
-4 GiB; the maximum LUN size is 2 TiB. The Pi constructs the FAT table in RAM;
-the existing guidance is to keep each share around 250-400 GB, but the
-practical limit depends on file count and layout. Very small shares may need a
-1 GiB sparse padding file because FAT32 requires at least 65,525 clusters.
-The bridge validates this and rejects a layout that is too small.
-
-For example, serve the parent directory read-only using
-[rclone](https://rclone.org/) on Windows:
-
-```powershell
-rclone serve webdav D:\Xbox360 --addr 192.168.1.50:8080 --read-only
-```
-
-Replace the address with the host's LAN IP. Leave the command running. Check
-from another device that `http://192.168.1.50:8080/` is reachable.
-The Pi's configuration has no WebDAV username/password fields; use a server
-accessible to the Pi without interactive authentication on a trusted network.
-Set `SERVER_URL` to that base URL and leave `HTTP_DISK_URL` empty in step 3.
-
-With `LUN_COUNT=auto`, the bridge searches for `Xbox_LUN1` through `Xbox_LUN8`;
-if none are detected it falls back to `Xbox_LUN1`. Alternatively specify a
-number from 1 to 8, which uses the corresponding consecutive LUN directories.
-The bridge repairs FAT32 boot headers using a local copy-on-write overlay;
-Xbox access remains read-only.
-
-### Option B: Direct ISO mode
+Configure the host firewall to allow the Pi to reach the server, and keep
+the server running. Generic WebDAV folders are not supported.
 
 Build or obtain the .NET 10 server; see [Building and testing](BUILDING.md).
 The following starts the source project from the repository root on Windows:
@@ -103,12 +62,11 @@ overrides the title in single-ISO mode.
 
 Open `http://192.168.1.50:8081/health` and the root URL
 `http://192.168.1.50:8081/`. The root response contains `games`, `excluded`,
-`warnings`, and a `disk` path such as `/exports/<snapshot>/disk`. Combine that
-path with the host address and enter the **complete** URL as `HTTP_DISK_URL`
-in step 3. Check `excluded` and `warnings` before connecting the Pi.
+`warnings`, and a `disk` path such as `/exports/<snapshot>/disk`. Enter the
+server base URL in step 3, not the snapshot path. Check `excluded` and
+`warnings` before connecting the Pi.
 
-This mode exposes one LUN using HTTP byte ranges, bypassing the Pi's folder-mode
-rclone/FUSE and FAT32 overlay. No padding file is needed. The server reads ISO
+The server exposes one disk using HTTP byte ranges. No padding file is needed. It reads ISO
 files without modifying them or creating a full extracted or disk-image copy.
 Keep the ISOs and the running server unchanged while the Xbox has the disk.
 
@@ -144,33 +102,108 @@ Pi Imager's OS customization: the image is already configured. Flashing erases
 the selected card, so verify the target first. Reinsert the card and open its
 `bootfs` partition.
 
-## 3. Configure Wi-Fi and the selected mode
+## 3. Configure Wi-Fi and the server
 
-Edit `x360-netdrive.txt` on `bootfs`. For folder mode:
+Edit `x360-netdrive.txt` on `bootfs`:
 
 ```ini
 WIFI_SSID="Your_2.4GHz_Network"
 WIFI_PASSWORD="Your_WiFi_Password"
 WIFI_COUNTRY="US"
-SERVER_URL="http://192.168.1.50:8080"
-HTTP_DISK_URL=""
-LUN_COUNT=auto
+SERVER_URL="http://192.168.1.50:8081"
 ```
 
-For direct ISO mode, set the Wi-Fi fields and use the exact URL returned by
-the server:
-
-```ini
-HTTP_DISK_URL="http://192.168.1.50:8081/exports/<snapshot>/disk"
-```
-
-A nonempty `HTTP_DISK_URL` selects direct ISO mode and ignores `LUN_COUNT`;
-clear it to return to folder mode. Use your actual country code, host address,
-port, and snapshot. The file is sourced as Bash, not parsed as plain INI:
+Use your actual country code, host address, and port. The file is sourced as Bash, not parsed as plain INI:
 edit only trusted files, and escape shell-special characters in quoted values
 (for example `\$`, `\"`, and `\\` inside double quotes; put a backslash before
 any backtick). Do not share the configured file: it contains your Wi-Fi password.
 Save it and safely eject the card.
+
+### Enable web control
+
+New images include a lightweight control page on port **8080** of the Pi.
+Before booting, put a unique random admin token in `x360-admin-token.txt`
+on `bootfs` (one line, 32-128 characters: letters, digits, `_` or `-`).
+For example, `openssl rand -hex 32` generates a suitable token; save its output
+privately in that file. Do not reuse tokens or share the configured card.
+The distributed image contains only an empty token file, never a shared secret.
+
+Open `http://<Pi-IP>:8080/` using the address from your router. Use the HTML sign-in form with
+username **admin** and the token as the password. If the file is absent, empty,
+or invalid, the control service refuses to start; automatic bridging still works.
+After changing the token on the card, reboot the Pi.
+Browser sessions expire after 12 hours, when you click **Sign out**, or when the
+control service restarts. Signing out does not detach USB drives.
+
+The page can:
+
+- Show source/USB service status and recent bridge logs.
+- Save named servers, including ones currently offline.
+- Mount a saved server on the fixed USB drive, replacing the current source.
+- Unmount the selected server without deleting saved profiles.
+- Temporarily attach or detach the USB drive.
+
+Enter the X360 Net Server **base URL** (for example
+`http://192.168.1.50:8081/`), not its snapshot disk URL. Profiles do not
+currently support servers requiring credentials.
+
+Profiles and the selected server are saved in `x360-netdrive/servers.json` on
+`bootfs` and restored automatically at boot. Once this file exists, it takes
+precedence over the source settings in `x360-netdrive.txt` (Wi-Fi settings remain
+there). Saving the first profile does not interrupt an existing legacy
+connection, but the next reconnect or reboot uses the saved selection.
+No selected server means no USB media at boot. Back up this file along
+with your configuration; do not edit it while the control service is running.
+
+Choose a saved server and click **Mount server**. This switches the source behind
+one fixed read-only USB drive, always on LUN0 with the same gadget serial number.
+The tested Xbox ignores additional LUNs, so slot choices and simultaneous
+servers are not supported. The Xbox still assigns the external drive name;
+other connected USB devices can affect that name. Keep the same folder layout
+on each server to reuse Aurora's scan path, and rescan after changing libraries.
+Unmount a selected server before deleting its profile.
+
+The USB disk always reports 2 TiB minus one 512-byte sector
+(2,199,023,255,040 bytes). The Pi pads smaller source disks with zeroes without
+changing their partitions or increasing their usable filesystem space, and
+rejects larger or non-sector-aligned sources instead of truncating them.
+This fixed capacity may help Aurora recognize a switched drive, but other
+identity factors have not been ruled out. Existing Aurora scan paths may need
+updating once after changing from the previous variable-size disk.
+
+**Switching servers briefly reconnects the USB drive.** Stop every game and
+return to the dashboard first; the page requires confirmation. Temporary
+detachment preserves the selection and leaves the source connected; to stay
+disconnected after reboot, use **Unmount server** instead.
+
+The settings file retains its version-1 format for compatibility. A sole older
+slot assignment is read as the fixed drive. Multiple older assignments produce
+an explicit error; mounting any saved server in the page replaces them with
+one selection, without deleting profiles.
+
+Refresh status after a request: `activating` means connection is still in
+progress, not success. The selected source must connect successfully before USB
+attaches. Restore server/network availability, then use **Reconnect and attach** to retry.
+An invalid settings file is reported as an error, never silently replaced or
+ignored. A failed operation may leave USB detached; consult the status and logs.
+
+Existing WebDAV profiles are retained but cannot be mounted. Add and select an
+X360 Net Server profile instead. For card-only upgrades, replace an old WebDAV
+`SERVER_URL` with the server base URL. A legacy `HTTP_DISK_URL` pointing to an
+X360 Net Server snapshot is resolved through that server's current manifest;
+remove it when switching to `SERVER_URL`, because it takes precedence.
+
+Reconnecting discovers fresh snapshot URLs, but does not rescan the PC ISO
+server. Restart that server after adding ISOs, then reconnect the selected server.
+
+The control page uses HttpOnly, SameSite session cookies and anti-CSRF checks.
+HTTP Basic headers remain supported for command-line clients without triggering
+a browser login popup. Plain HTTP does **not** encrypt the token, session cookie,
+or traffic. Use only a trusted LAN, or put it
+behind a trusted HTTPS reverse proxy that preserves the public `Host` header.
+Never forward port 8080 to the internet.
+Logs can contain source URLs and local network details; keep access private.
+The token enables web control, not an interactive Linux login.
 
 ## 4. Connect and use
 
@@ -206,11 +239,9 @@ write to the boot partition and weaken this protection.
 Do not change source files or the virtual layout while the Xbox is using it.
 Stop using the disk and disconnect the bridge first.
 
-- **Folder mode:** update the WebDAV folders, then restart the Pi/bridge to
-  rebuild its virtual layout.
-- **Direct ISO mode:** update the ISOs or server options, restart the server,
-  inspect its new manifest, update `HTTP_DISK_URL` if the snapshot changed, and
-  reconnect the Pi/bridge. Do not assume the previous snapshot URL is valid.
+Update the ISOs or server options, restart the server, then reconnect the
+selected server in the control page. Card-only setups discover the new snapshot
+when the bridge restarts.
 
 The simplest way to change the Pi configuration is to power it down after
 disconnecting, edit `x360-netdrive.txt` on the card's `bootfs`, safely eject
@@ -222,9 +253,8 @@ actively reading it.
 - **No Wi-Fi:** check 2.4 GHz availability, country code, credentials, and
   Bash escaping. Wi-Fi setup retries independently of the USB bridge.
 - **No drive:** check the host server is running and reachable from the Pi,
-  the configured URL and mode, the data cable and Pi USB port, and the Xbox's
-  current USB drive index. In folder mode check the LUN names and FAT32 size
-  warning; in ISO mode inspect `/health`, `excluded`, and `warnings`.
+  the configured server URL, the data cable and Pi USB port, and the Xbox's
+  current USB drive index. Inspect `/health`, `excluded`, and `warnings`.
 - **Missing or incorrectly named ISO:** inspect the server's manifest and logs;
   locked or unsupported images are excluded, and title fallback is reported.
 - **Game does not start:** USB enumeration is not proof of game compatibility.

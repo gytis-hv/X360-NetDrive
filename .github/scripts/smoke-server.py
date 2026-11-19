@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import urllib.error
 
 
 def create_iso(path):
@@ -67,17 +68,47 @@ def main():
                         time.sleep(0.5)
                 if health["status"] != "ready" or health["games"] != 1:
                     raise AssertionError(f"Unexpected health response: {health}")
-                with urllib.request.urlopen(base + "/webdav/Games/smoke/default.xex", timeout=10) as response:
-                    if response.read() != expected:
-                        raise AssertionError("Published executable returned incorrect ISO data")
                 with urllib.request.urlopen(base + "/", timeout=10) as response:
                     manifest = json.load(response)
-                request = urllib.request.Request(base + manifest["disk"], headers={"Range": "bytes=0-511"})
-                with urllib.request.urlopen(request, timeout=10) as response:
-                    disk = response.read()
-                    if response.status != 206 or len(disk) != 512 or disk[510:512] != b"\x55\xaa":
-                        raise AssertionError("Published executable returned an invalid virtual disk range")
-                print(f"PASS: isolated {executable.name}: health, ISO file and FAT32 disk range")
+                if "webDav" in manifest:
+                    raise AssertionError("Manifest still advertises WebDAV")
+                try:
+                    urllib.request.urlopen(base + "/webdav/", timeout=10)
+                except urllib.error.HTTPError as error:
+                    if error.code != 404:
+                        raise
+                else:
+                    raise AssertionError("WebDAV endpoint is still available")
+                def read_range(offset, length):
+                    request = urllib.request.Request(base + manifest["disk"], headers={
+                        "Range": f"bytes={offset}-{offset + length - 1}"})
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        data = response.read()
+                        if response.status != 206 or len(data) != length:
+                            raise AssertionError("Invalid disk range response")
+                        return data
+
+                mbr = read_range(0, 512)
+                if mbr[510:512] != b"\x55\xaa":
+                    raise AssertionError("Invalid MBR signature")
+                partition = struct.unpack_from("<I", mbr, 454)[0] * 512
+                boot = read_range(partition, 512)
+                sector_size = struct.unpack_from("<H", boot, 11)[0]
+                cluster_size = sector_size * boot[13]
+                reserved = struct.unpack_from("<H", boot, 14)[0]
+                fat_size = struct.unpack_from("<I", boot, 36)[0]
+                data_start = partition + (reserved + boot[16] * fat_size) * sector_size
+                cluster = struct.unpack_from("<I", boot, 44)[0]
+                for alias in (b"GAMES      ", b"SMOKE      ", b"DEFAULT XEX"):
+                    directory = read_range(data_start + (cluster - 2) * cluster_size, cluster_size)
+                    entries = (directory[i:i + 32] for i in range(0, len(directory), 32))
+                    entry = next((item for item in entries if item[:11] == alias), None)
+                    if entry is None:
+                        raise AssertionError(f"Missing FAT entry {alias!r}")
+                    cluster = (struct.unpack_from("<H", entry, 20)[0] << 16) | struct.unpack_from("<H", entry, 26)[0]
+                if read_range(data_start + (cluster - 2) * cluster_size, len(expected)) != expected:
+                    raise AssertionError("Published executable returned incorrect ISO data")
+                print(f"PASS: isolated {executable.name}: health, FAT32 ranges and ISO file")
             except Exception:
                 log.flush()
                 log.seek(0)

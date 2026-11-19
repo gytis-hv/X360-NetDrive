@@ -25,6 +25,13 @@ jobs:
           for script in rpi/build_image.sh rpi/scripts/*.sh; do
             bash -n "$script"
           done
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - name: Test Pi controller
+        working-directory: rpi/control
+        run: go test -race ./...
 
   server:
     name: Server ${{ matrix.rid }}
@@ -80,13 +87,17 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
       - name: Install image build prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y wget xz-utils parted e2fsprogs qemu-user-static binfmt-support systemd-container
       - name: Build public no-login image
         working-directory: rpi
-        run: sudo env HEADLESS_DEBUG=0 bash build_image.sh
+        run: sudo env HEADLESS_DEBUG=0 GO="$(command -v go)" bash build_image.sh
       - name: Compress image
         run: |
           mkdir artifacts
@@ -124,6 +135,10 @@ jobs:
           sha256sum x360-netdrive-rpi-zero2w.img.xz \
             x360-netdrive-server-win-x64.zip x360-netdrive-server-linux-x64.zip > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
+          release_tags=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name')
+          if ! grep -Fxq -- "$RELEASE_TAG" <<< "$release_tags"; then
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" --clobber \
             x360-netdrive-rpi-zero2w.img.xz x360-netdrive-server-win-x64.zip \
             x360-netdrive-server-linux-x64.zip SHA256SUMS.txt

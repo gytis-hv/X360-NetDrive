@@ -4,6 +4,7 @@ set -euo pipefail
 # Build script for X360-NetDrive Raspberry Pi Zero 2 W distributable image
 # Run as root (sudo ./build_image.sh) on Debian/Ubuntu/WSL2 with:
 #   apt install -y wget xz-utils parted e2fsprogs qemu-user-binfmt systemd-container
+# Go 1.24+ must be on PATH (or set GO to its absolute path).
 
 IMAGE_URL="https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-2024-11-19/2024-11-19-raspios-bookworm-armhf-lite.img.xz"
 IMAGE_SHA256="1dacc70cc09162c995020ac1739ee60e6843cf2bfb393654e694e3f017d781bb"
@@ -61,6 +62,14 @@ if [ "$HEADLESS_DEBUG" = 1 ]; then
     fi
 fi
 
+GO="${GO:-go}"
+CONTROL_BINARY=$(realpath -m "$WORK_DIR/x360-netdrive-control")
+mkdir -p "$WORK_DIR"
+(
+    cd control
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 "$GO" build -trimpath \
+        -ldflags="-s -w" -o "$CONTROL_BINARY" .
+)
 mkdir -p "$WORK_DIR" "$MOUNT_DIR"
 if mountpoint -q "$MOUNT_DIR" || mountpoint -q "${MOUNT_DIR}/boot/firmware"; then
     echo "Image mount point is already in use: $MOUNT_DIR" >&2
@@ -113,9 +122,15 @@ fi
 cp config/x360-netdrive.txt "${MOUNT_DIR}/boot/firmware/x360-netdrive.txt"
 cp scripts/x360-netdrive.sh "${MOUNT_DIR}/usr/local/bin/x360-netdrive.sh"
 chmod +x "${MOUNT_DIR}/usr/local/bin/x360-netdrive.sh"
-install -m 755 scripts/x360-fat32.py "${MOUNT_DIR}/usr/local/bin/"
+install -m 755 scripts/x360-nbd-size.py "${MOUNT_DIR}/usr/local/bin/"
+install -m 755 "$CONTROL_BINARY" "${MOUNT_DIR}/usr/local/bin/x360-netdrive-control"
+install -D -m 644 "$("$GO" env GOROOT)/LICENSE" \
+    "${MOUNT_DIR}/usr/share/doc/x360-netdrive-control/GO-LICENSE"
 cp systemd/x360-netdrive.service "${MOUNT_DIR}/etc/systemd/system/x360-netdrive.service"
-install -m 644 systemd/x360-netdrive-wifi.service "${MOUNT_DIR}/etc/systemd/system/"
+install -m 644 systemd/x360-netdrive-wifi.service systemd/x360-netdrive-source.service \
+    systemd/x360-netdrive-control.service "${MOUNT_DIR}/etc/systemd/system/"
+install -m 600 /dev/null "${MOUNT_DIR}/boot/firmware/x360-admin-token.txt"
+install -d -m 700 "${MOUNT_DIR}/boot/firmware/x360-netdrive"
 if [ "$HEADLESS_DEBUG" = 1 ]; then
     install -m 755 scripts/x360-netdrive-diagnostics.sh "${MOUNT_DIR}/usr/local/bin/"
     install -m 644 systemd/x360-netdrive-diagnostics.service systemd/x360-netdrive-diagnostics.timer \
@@ -130,7 +145,7 @@ systemd-nspawn -D "$MOUNT_DIR" /bin/bash -e -c "
     export DEBIAN_FRONTEND=noninteractive
     sed -i 's/^MODULES=.*/MODULES=most/' /etc/initramfs-tools/initramfs.conf
     apt-get update
-    apt-get install -y --no-install-recommends rclone nbdkit nbd-client curl zram-tools python3
+    apt-get install -y --no-install-recommends nbdkit nbd-client curl zram-tools python3
 
     cat << 'EOF' > /etc/default/zramswap
 ALGO=lz4
@@ -141,6 +156,7 @@ EOF
     systemctl enable zramswap.service
     systemctl enable x360-netdrive.service
     systemctl enable x360-netdrive-wifi.service
+    systemctl enable x360-netdrive-control.service
 "
 
 if [ "$HEADLESS_DEBUG" = 0 ]; then

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 CONFIG_FILE="${CONFIG_FILE:-/boot/firmware/x360-netdrive.txt}"
+STATE_DIR="${STATE_DIR:-/run/x360-netdrive}"
 
 # 1. Load user config safely (strip Windows CRLF line endings)
 if [ -f "$CONFIG_FILE" ]; then
@@ -31,99 +32,167 @@ if [ "${1:-}" = "--wifi-only" ]; then
     exit 0
 fi
 
-SERVER_URL="${SERVER_URL:-http://192.168.1.50:8080}"
-SERVER_URL="${SERVER_URL%/}"
+usb_detach() {
+    if [ -d /sys/module/g_mass_storage ]; then
+        modprobe -r g_mass_storage
+    fi
+}
+
+usb_attach() {
+    if [ ! -s "$STATE_DIR/devices" ]; then
+        echo "[X360-NetDrive] Connect a source before attaching USB." >&2
+        return 1
+    fi
+    if [ -d /sys/module/g_mass_storage ]; then
+        echo "[X360-NetDrive] USB is already attached."
+        return
+    fi
+    mapfile -t devices < "$STATE_DIR/devices"
+    if [ "${#devices[@]}" -ne 1 ]; then
+        echo "[X360-NetDrive] Exactly one source is required for the fixed USB drive." >&2
+        return 1
+    fi
+    NBD_DEVICES="${devices[0]}"
+    USB_SERIAL=$(tr -d '\0' < "${USB_SERIAL_FILE:-/sys/firmware/devicetree/base/serial-number}")
+    if [ -z "$USB_SERIAL" ]; then
+        echo "[X360-NetDrive] Cannot determine the Pi USB serial number." >&2
+        return 1
+    fi
+    modprobe g_mass_storage file="$NBD_DEVICES" stall=0 \
+        removable=1 ro=1 \
+        idVendor=0x0781 idProduct=0x5575 iManufacturer="SanDisk" \
+        iProduct="X360-NetDrive" iSerialNumber="$USB_SERIAL"
+}
+
+source_disconnect() {
+    usb_detach
+    if [ -f "$STATE_DIR/devices" ]; then
+        while IFS= read -r dev; do
+            status=0
+            nbd-client -c "$dev" >/dev/null 2>&1 || status=$?
+            case "$status" in
+                0) nbd-client -d "$dev" ;;
+                1) ;;
+                *) echo "[X360-NetDrive] Cannot check NBD connection: $dev" >&2; return "$status" ;;
+            esac
+        done < "$STATE_DIR/devices"
+    fi
+    for i in {1..8}; do
+        if mountpoint -q "/mnt/lun$i"; then
+            umount "/mnt/lun$i"
+        fi
+    done
+    rm -f "$STATE_DIR/devices" "$STATE_DIR/usb-files"
+    rm -f "$STATE_DIR/nbd1-raw.sock"
+}
+
+case "${1:-}" in
+    --usb-attach) usb_attach; exit ;;
+    --usb-detach) usb_detach; exit ;;
+    --disconnect) source_disconnect; exit ;;
+    ""|--source-only) ;;
+    *) echo "[X360-NetDrive] Unknown action: $1" >&2; exit 1 ;;
+esac
+
+if [ -f "$STATE_DIR/source.conf" ]; then
+    # Written only by the authenticated controller with shell-quoted values.
+    source "$STATE_DIR/source.conf"
+fi
+SERVER_URL="${SERVER_URL:-}"
 HTTP_DISK_URL="${HTTP_DISK_URL:-}"
-if [ -n "$HTTP_DISK_URL" ] && [[ ! "$HTTP_DISK_URL" =~ ^https?:// ]]; then
-    echo "[X360-NetDrive] HTTP_DISK_URL must be an HTTP(S) URL." >&2
+if [ "${MANAGED_SLOTS:-0}" = 1 ]; then
+    HTTP_DISK_URL=""
+else
+    if [ -n "$HTTP_DISK_URL" ]; then
+        server_address="$HTTP_DISK_URL"
+    else
+        server_address="$SERVER_URL"
+    fi
+    if [ -z "$server_address" ]; then
+        echo "[X360-NetDrive] Configure SERVER_URL with an X360 Net Server base URL or select a server in the control page." >&2
+        exit 1
+    fi
+    HTTP_DISK_URL=$("${CONTROL_BIN:-/usr/local/bin/x360-netdrive-control}" --discover-server "$server_address")
+fi
+install -d -m 700 "$STATE_DIR"
+if [ -e "$STATE_DIR/devices" ]; then
+    echo "[X360-NetDrive] Source state already exists; disconnect before connecting." >&2
     exit 1
 fi
-PROBE_URL="${HTTP_DISK_URL:-$SERVER_URL}"
-
-# 3. Wait until WebDAV server is reachable
-echo "[X360-NetDrive] Waiting for server at $PROBE_URL..."
-until curl -s --head --fail --connect-timeout 3 --max-time 10 "$PROBE_URL" >/dev/null; do
-    sleep 2
+# Daemons belong to the source systemd unit; systemd terminates them on failure/stop.
+for i in {1..8}; do
+    if [ -S "/tmp/nbd$i.sock" ]; then
+        rm -- "/tmp/nbd$i.sock"
+    fi
 done
 
-# 4. Determine LUN list (auto-detect Xbox_LUN1..8 or use explicit count)
+# 4. Use only LUN0: the tested Xbox does not enumerate additional LUNs.
+wait_for_server() {
+    echo "[X360-NetDrive] Waiting for server at $1..."
+    until curl -s --head --fail --connect-timeout 3 --max-time 10 "$1" >/dev/null; do
+        sleep 2
+    done
+}
 LUN_LIST=()
-if [ -n "$HTTP_DISK_URL" ]; then
-    LUN_LIST=(1)
-elif [ "${LUN_COUNT:-auto}" = "auto" ]; then
-    AVAILABLE_DIRS=$(rclone lsd :webdav: --webdav-url "$SERVER_URL" 2>/dev/null | awk '{print $NF}' || true)
-    for idx in $(seq 1 8); do
-        if echo "$AVAILABLE_DIRS" | grep -qx "Xbox_LUN${idx}"; then
+if [ "${MANAGED_SLOTS:-0}" = 1 ]; then
+    for idx in "${!SLOT_URLS[@]}"; do
+        if [ -n "${SLOT_URLS[$idx]:-}" ]; then
             LUN_LIST+=("$idx")
         fi
     done
-    # Fallback to LUN 1 if auto-detection finds nothing
-    if [ ${#LUN_LIST[@]} -eq 0 ]; then
-        LUN_LIST=(1)
-    fi
 else
-    COUNT=${LUN_COUNT:-2}
-    if [ "$COUNT" -lt 1 ]; then COUNT=1; fi
-    if [ "$COUNT" -gt 8 ]; then COUNT=8; fi
-    for idx in $(seq 1 "$COUNT"); do
-        LUN_LIST+=("$idx")
-    done
+    if [ "${LUN_COUNT:-auto}" != auto ] && [ "${LUN_COUNT:-auto}" != 1 ]; then
+        echo "[X360-NetDrive] Only one USB drive is supported; set LUN_COUNT=1 or use the control page." >&2
+        exit 1
+    fi
+    LUN_LIST=(1)
+fi
+if [ "${#LUN_LIST[@]}" -gt 1 ] || { [ "${#LUN_LIST[@]}" -eq 1 ] && [ "${LUN_LIST[0]}" != 1 ]; }; then
+    echo "[X360-NetDrive] Invalid fixed-drive mapping; reconnect a single server from the control page." >&2
+    exit 1
+fi
+if [ "${MANAGED_SLOTS:-0}" = 1 ] && [ "${#LUN_LIST[@]}" -eq 1 ]; then
+    case "${SLOT_TYPES[1]:-}" in
+        disk) HTTP_DISK_URL="${SLOT_URLS[1]}" ;;
+        webdav) echo "[X360-NetDrive] WebDAV sources are no longer supported; select an X360 Net Server." >&2; exit 1 ;;
+        *) echo "[X360-NetDrive] Invalid source type in USB1." >&2; exit 1 ;;
+    esac
 fi
 
 echo "[X360-NetDrive] Mounting LUNs: ${LUN_LIST[*]}"
 
-# 5. Initialize NBD devices & mount WebDAV LUNs
+# Initialize the NBD disk export.
+USB_DISK_BYTES=2199023255040
+NBD_SIZE_HELPER="${NBD_SIZE_HELPER:-/usr/local/bin/x360-nbd-size.py}"
 modprobe nbd max_part=8 nbds_max=8
 NBD_DEVICES=""
-NBD_INDEX=0
+: > "$STATE_DIR/devices"
 
 for i in "${LUN_LIST[@]}"; do
-    MNT="/mnt/lun${i}"
+    wait_for_server "$HTTP_DISK_URL"
     SOCK="/tmp/nbd${i}.sock"
-    DEV="/dev/nbd${NBD_INDEX}"
+    RAW_SOCK="$STATE_DIR/nbd${i}-raw.sock"
+    DEV="/dev/nbd0"
+    rm -f "$RAW_SOCK"
+    printf '%s\n' "$DEV" >> "$STATE_DIR/devices"
 
-    if [ -n "$HTTP_DISK_URL" ]; then
-        nbdkit -r -U "$SOCK" curl "$HTTP_DISK_URL" \
-            protocols=http,https timeout=30 tcp-keepalive=true tcp-nodelay=true
-        nbd-client -unix "$SOCK" "$DEV"
-    else
-        mkdir -p "$MNT"
-        GOGC=25 rclone mount ":webdav:Xbox_LUN${i}" "$MNT" \
-            --webdav-url "$SERVER_URL" \
-            --read-only \
-            --vfs-cache-mode off \
-            --buffer-size 4M \
-            --vfs-read-chunk-size 4M \
-            --vfs-read-chunk-size-limit 16M \
-            --dir-cache-time 24h \
-            --attr-timeout 24h \
-            --no-modtime \
-            --no-checksum \
-            --transfers 1 \
-            --checkers 2 \
-            --use-mmap \
-            --daemon
-        sleep 2
-        nbdkit --filter=cow -U "$SOCK" floppy "$MNT" label="XBOX_USB${i}" \
-            cow-on-read=false cow-on-cache=false
-        nbd-client -unix "$SOCK" "$DEV"
-        /usr/local/bin/x360-fat32.py "$DEV"
-    fi
+    nbdkit -r -U "$RAW_SOCK" curl "$HTTP_DISK_URL" \
+        protocols=http,https timeout=30 tcp-keepalive=true tcp-nodelay=true
 
+    "$NBD_SIZE_HELPER" "$RAW_SOCK" "$USB_DISK_BYTES"
+
+    # Keep the raw export alive so the size check and padded view use the same snapshot.
+    nbdkit --filter=truncate -U "$SOCK" nbd socket="$RAW_SOCK" truncate="$USB_DISK_BYTES"
+    nbd-client -unix "$SOCK" "$DEV"
     if [ -z "$NBD_DEVICES" ]; then
         NBD_DEVICES="$DEV"
     else
         NBD_DEVICES="${NBD_DEVICES},${DEV}"
     fi
 
-    NBD_INDEX=$((NBD_INDEX + 1))
 done
 
-# 6. Expose all virtual LUNs over USB OTG to Xbox 360
-USB_SERIAL=$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)
-if [ -z "$USB_SERIAL" ]; then
-    echo "[X360-NetDrive] Cannot determine the Pi USB serial number." >&2
-    exit 1
+if [ "${1:-}" != --source-only ]; then
+    usb_attach
 fi
-modprobe g_mass_storage file="$NBD_DEVICES" stall=0 removable=1 ro=1 idVendor=0x0781 idProduct=0x5575 iManufacturer="SanDisk" iProduct="X360-NetDrive" iSerialNumber="$USB_SERIAL"
-echo "[X360-NetDrive] Bridge active on $NBD_DEVICES"
+echo "[X360-NetDrive] Source connected on $NBD_DEVICES"

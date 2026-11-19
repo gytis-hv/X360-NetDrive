@@ -1,12 +1,15 @@
 [Unit]
-Description=X360-NetDrive WebDAV-to-USB Mass Storage Bridge
-After=network-online.target NetworkManager.service x360-netdrive-wifi.service
-Wants=network-online.target x360-netdrive-wifi.service
+Description=X360-NetDrive USB attachment
+After=x360-netdrive-source.service
+Requires=x360-netdrive-source.service
+BindsTo=x360-netdrive-source.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/x360-netdrive.sh
+ExecCondition=/usr/bin/test -s /run/x360-netdrive/devices
+ExecStart=/usr/local/bin/x360-netdrive.sh --usb-attach
+ExecStop=/usr/local/bin/x360-netdrive.sh --usb-detach
 
 [Install]
 WantedBy=multi-user.target
